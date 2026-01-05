@@ -22,7 +22,7 @@ Have you ever run `grep` to find an error, seen the line number, opened `vim`, a
 ### From Source
 
 ```bash
-git clone [https://github.com/moli-green/slit-editor.git](https://github.com/moli-green/slit-editor.git)
+git clone https://github.com/moli-green/slit-editor.git
 cd slit-editor
 make
 sudo make install
