@@ -1,0 +1,24 @@
+# --- macOS ---
+.DS_Store
+
+# --- Build Output (生成物) ---
+# コンパイルされた実行ファイル
+slit
+
+# 中間ファイル（現状のMakefileでは出ませんが念のため）
+*.o
+
+# Macでのデバッグ情報フォルダ（将来デバッグする時に出ることがある）
+*.dSYM
+
+# --- Editors / IDEs ---
+# Vim
+*.swp
+*~
+
+# VS Code
+.vscode/
+
+# IntelliJ / CLion
+.idea/
+
