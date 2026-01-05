@@ -26,7 +26,7 @@ git clone [https://github.com/moli-green/slit-editor.git](https://github.com/mol
 cd slit-editor
 make
 sudo make install
-
+```
 ---
 Copyright (c) 2026 Shinya Koyano.
 
