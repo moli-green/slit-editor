@@ -1,4 +1,7 @@
 /*** slit.c - The Keyhole Text Editor (v0.5 - Pipe Support) ***/
+#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,8 +11,14 @@
 #include <sys/ioctl.h>
 #include <fcntl.h> // open用
 #include <errno.h>
+#include <signal.h>
+#include <getopt.h>
+#include <wchar.h>
+#include <locale.h>
 
-#define SLIT_VERSION "0.5.0"
+#define SLIT_VERSION "0.6.0"
+
+#define CTRL_KEY(k) ((k) & 0x1f)
 
 enum editorKey {
     ARROW_LEFT = 1000,
@@ -30,7 +39,8 @@ typedef struct erow {
 } erow;
 
 struct editorConfig {
-    int cx, cy;     
+    int cx, cy; // cxはバイトインデックス
+    int rx;     // rxはレンダリング上のインデックス（カラム位置）
     int numrows;    
     erow *row;      
     char *filename; // NULLならパイプモード
@@ -40,12 +50,25 @@ struct editorConfig {
 
 struct editorConfig E;
 
+void disableRawMode();
+
 // --- 画面出力用ラッパー ---
 // 画面制御コードは必ず /dev/tty に送る
 void tty_write(const char *buf, size_t len) {
     if (E.tty_fd != -1) {
-        write(E.tty_fd, buf, len);
+        if (write(E.tty_fd, buf, len) == -1) {
+            // エラーは無視（リカバリ不能）
+        }
     }
+}
+
+void handleSignal(int sig) {
+    // 端末設定を復元
+    disableRawMode();
+
+    // デフォルトのハンドラに戻してシグナルを再送（正常な終了ステータスのため）
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 
 void die(const char *s) {
@@ -76,6 +99,20 @@ void enableRawMode() {
     if (tcsetattr(E.tty_fd, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
+void registerSignalHandlers() {
+    struct sigaction sa;
+    sa.sa_handler = handleSignal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
+    // SIGWINCHはとりあえず無視（または再描画が必要ならここに追加）
+    // 現状は1行編集なので大きな影響はない
+}
+
 int is_utf8_continuation(char c) {
     return (c & 0xC0) == 0x80;
 }
@@ -96,6 +133,34 @@ void editorInsertRow(int at, char *s, size_t len) {
 
 void editorFreeRow(erow *row) {
     free(row->chars);
+}
+
+// バイトインデックス(cx)を画面上のカラム位置(rx)に変換
+// UTF-8文字幅を考慮
+int editorRowCxToRx(erow *row, int cx) {
+    int rx = 0;
+    int j = 0;
+    while (j < cx && j < row->len) {
+        int char_len = 1;
+        // UTF-8のバイト長判定
+        unsigned char c = row->chars[j];
+        if (c < 0x80) char_len = 1;
+        else if ((c & 0xE0) == 0xC0) char_len = 2;
+        else if ((c & 0xF0) == 0xE0) char_len = 3;
+        else if ((c & 0xF8) == 0xF0) char_len = 4;
+
+        // 文字幅取得
+        wchar_t wc;
+        int width = 1;
+        if (mbtowc(&wc, &row->chars[j], char_len) > 0) {
+             width = wcwidth(wc);
+             if (width < 0) width = 0; // 制御文字などは0幅扱い
+        }
+
+        rx += width;
+        j += char_len;
+    }
+    return rx;
 }
 
 void editorDelRow(int at) {
@@ -171,6 +236,47 @@ void editorBackspace() {
     }
 }
 
+// カーソル直前の単語を削除 (Ctrl+W)
+void editorDeleteWord() {
+    erow *row = &E.row[E.cy];
+    if (E.cx == 0) return;
+
+    // スペースをスキップ
+    int pos = E.cx;
+    while (pos > 0 && isspace((unsigned char)row->chars[pos - 1])) {
+        pos--;
+    }
+    // 単語の先頭を探す
+    while (pos > 0 && !isspace((unsigned char)row->chars[pos - 1])) {
+        // UTF-8の後退処理（本当はもっと厳密にやるべきだが、簡易的にスペース区切りで動かす）
+        pos--;
+        while (pos > 0 && is_utf8_continuation(row->chars[pos])) pos--;
+    }
+
+    int len = E.cx - pos;
+    for (int i = 0; i < len; i++) {
+        // editorBackspaceを呼ぶとカーソル移動も処理してくれるが、効率が悪いので直接消す
+        // ただ、UTF-8対応のeditorBackspaceを使うのが一番安全
+        editorBackspace();
+    }
+}
+
+// 行頭からカーソルまで削除 (Ctrl+U)
+void editorDeleteToStart() {
+    while (E.cx > 0) {
+        editorBackspace();
+    }
+}
+
+// カーソルから行末まで削除 (Ctrl+K)
+void editorDeleteToEnd() {
+    erow *row = &E.row[E.cy];
+    int remaining = row->len - E.cx;
+    for (int i = 0; i < remaining; i++) {
+        editorRowDelChar(row, E.cx);
+    }
+}
+
 // --- 入出力 (Pipe対応) ---
 
 // --- 修正版 editorOpen (v0.6) ---
@@ -190,6 +296,21 @@ void editorOpen(char *filename) {
         free(E.filename);
         E.filename = strdup(filename);
         fp = fopen(filename, "r");
+
+        // バイナリチェック
+        if (fp) {
+            char buf[1024];
+            size_t bytes_read = fread(buf, 1, sizeof(buf), fp);
+            for (size_t i = 0; i < bytes_read; i++) {
+                if (buf[i] == '\0') {
+                    fclose(fp);
+                    fprintf(stderr, "slit: Binary file detected. Cannot edit.\n");
+                    exit(1);
+                }
+            }
+            // チェック完了後、ファイルポインタを先頭に戻す
+            rewind(fp);
+        }
     } else {
         // パイプモード: 標準入力から読む
         // (isattyチェックを抜けたということは、ここはパイプからの入力)
@@ -324,9 +445,12 @@ void editorRefreshLine() {
     tty_write(buf, strlen(buf));
     free(buf);
 
-    if (status_len + E.cx > 0) {
+    // カーソルのレンダリング位置を計算
+    E.rx = editorRowCxToRx(row, E.cx);
+
+    if (status_len + E.rx > 0) {
         char move_cursor[32];
-        snprintf(move_cursor, sizeof(move_cursor), "\r\x1b[%dC", status_len + E.cx);
+        snprintf(move_cursor, sizeof(move_cursor), "\r\x1b[%dC", status_len + E.rx);
         tty_write(move_cursor, strlen(move_cursor));
     } else {
         tty_write("\r", 1);
@@ -347,6 +471,23 @@ void editorProcessKeypress() {
             break;
         case 13: 
             editorInsertNewline();
+            break;
+        case CTRL_KEY('a'):
+        case HOME_KEY:
+            E.cx = 0;
+            break;
+        case CTRL_KEY('e'):
+        case END_KEY:
+            if (E.cy < E.numrows) E.cx = E.row[E.cy].len;
+            break;
+        case CTRL_KEY('u'):
+            editorDeleteToStart();
+            break;
+        case CTRL_KEY('k'):
+            editorDeleteToEnd();
+            break;
+        case CTRL_KEY('w'):
+            editorDeleteWord();
             break;
         case ARROW_UP:
         case ARROW_DOWN:
@@ -369,18 +510,127 @@ void initEditor() {
     E.tty_fd = -1;
 }
 
+void print_help() {
+    printf("slit - The Keyhole Text Editor (v%s)\n", SLIT_VERSION);
+    printf("Usage: slit [OPTIONS] [FILE]\n\n");
+    printf("Options:\n");
+    printf("  +<line>         Start editing at specific line number (0-indexed logic, but usage is usually 1-based)\n");
+    printf("  <line>          Start editing at specific line number (if argument is purely numeric)\n");
+    printf("  -h, --help      Show this help message\n");
+    printf("  -v, --version   Show version information\n");
+    printf("\n");
+    printf("Examples:\n");
+    printf("  slit config.json       Edit file\n");
+    printf("  slit +10 config.json   Edit starting at line 10\n");
+    printf("  slit 10 config.json    Edit starting at line 10\n");
+    printf("  ls | slit              Edit pipeline stream\n");
+}
+
+void print_version() {
+    printf("slit %s\n", SLIT_VERSION);
+    printf("Copyright (c) 2026 Shinya Koyano\n");
+    printf("License: MIT\n");
+}
+
+int is_numeric(const char *str) {
+    if (!str || *str == '\0') return 0;
+    while (*str) {
+        if (!isdigit((unsigned char)*str)) return 0;
+        str++;
+    }
+    return 1;
+}
+
 int main(int argc, char *argv[]) {
+    // ロケール設定（wcwidthのため）
+    setlocale(LC_ALL, "");
+
     initEditor();
 
-    char *filename = NULL;
     int start_line = 0;
+    char *filename = NULL;
 
-    for (int i = 1; i < argc; i++) {
-        if (argv[i][0] == '+') {
-            start_line = atoi(&argv[i][1]);
-            if (start_line > 0) start_line--; 
+    static struct option long_options[] = {
+        {"help", no_argument, 0, 'h'},
+        {"version", no_argument, 0, 'v'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    int option_index = 0;
+
+    // Check for +line arguments first manually as getopt doesn't handle + prefixed options well
+    // or standard convention. We will remove them from processing or handle them specially?
+    // Actually, traditionally +NUM is handled by checking argv manually or having logic skip it.
+    // But since we want to support "slit 10 file", we need to be careful.
+
+    // Let's use getopt_long first to handle -h and -v.
+    // Note: getopt rearranges argv.
+
+    while (1) {
+        opt = getopt_long(argc, argv, "hv", long_options, &option_index);
+        if (opt == -1) break;
+
+        switch (opt) {
+            case 'h':
+                print_help();
+                exit(0);
+            case 'v':
+                print_version();
+                exit(0);
+            case '?':
+                // getopt_long prints error message automatically
+                exit(1);
+        }
+    }
+
+    // Process remaining arguments
+    for (int i = optind; i < argc; i++) {
+        char *arg = argv[i];
+        if (arg[0] == '+') {
+            start_line = atoi(arg + 1);
+            if (start_line > 0) start_line--;
+        } else if (is_numeric(arg)) {
+            // Check if it's a line number (pure numeric)
+            // But what if the file is named "123"?
+            // We assume numeric arg is line number if we haven't set one yet?
+            // Or prioritize: slit 123 -> open file "123"?
+            // User requirement: "Allow line numbers to be specified without +"
+            // Convention: "slit 10 file" -> line 10. "slit file 10" -> line 10.
+            // "slit 123" -> open file "123"? Ambiguous.
+            // Let's assume if there are 2 args and one is numeric, that's line number.
+            // If only 1 arg and it's numeric, is it file or line?
+            // If it's "slit 123", usually expect to edit file "123" or start empty at line 123?
+            // "slit" is for file editing. "slit 123" -> likely file "123".
+            // "slit 123 file" -> line 123, file "file".
+
+            // Heuristic:
+            // Store potential filename and potential line number.
+            int val = atoi(arg);
+            // If we already have a filename, this must be line number (or vice versa)
+            if (filename) {
+                // We have a file, this is likely line number
+                 if (val > 0) start_line = val - 1;
+            } else {
+                // No filename yet. Is this a line number or file?
+                // Peek ahead: are there more args?
+                if (i + 1 < argc) {
+                    // There is another arg. Assume this is line number.
+                    if (val > 0) start_line = val - 1;
+                } else {
+                    // Last arg. If it's numeric, treat as filename?
+                    // But if user wants "slit 10" (edit stdin at line 10), they might do "cat file | slit 10".
+                    // If isatty(stdin), then "slit 123" -> file "123".
+                    // If !isatty(stdin) (pipe), "slit 123" -> line 123.
+                    if (!isatty(STDIN_FILENO)) {
+                        if (val > 0) start_line = val - 1;
+                    } else {
+                        filename = arg;
+                    }
+                }
+            }
         } else {
-            filename = argv[i];
+            filename = arg;
         }
     }
 
@@ -401,6 +651,7 @@ int main(int argc, char *argv[]) {
     }
 
     enableRawMode();
+    registerSignalHandlers();
     
     if (start_line > 0 && start_line < E.numrows) {
         E.cy = start_line;

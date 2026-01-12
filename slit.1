@@ -1,0 +1,72 @@
+.TH SLIT 1 "October 2026" "v0.6.0" "User Commands"
+.SH NAME
+slit \- The "Keyhole" Text Editor for Unix
+.SH SYNOPSIS
+.B slit
+[\fIOPTIONS\fR] [\fIFILE\fR]
+.br
+.B command
+|
+.B slit
+|
+.B command
+.SH DESCRIPTION
+.B slit
+is a minimal, inline text editor designed to edit a specific line of a file (or stream) in-place, preserving the surrounding terminal context. It adheres to the Unix philosophy of doing one thing well.
+
+It is particularly useful for quick edits in configuration files without clearing the screen, or for interactively modifying data in a shell pipeline.
+
+.SH OPTIONS
+.TP
+.B +line
+Start editing at the specified line number. Note that while internal logic is 0-indexed, this option typically aligns with the user's view (though currently implemented as direct index if starting with +).
+.TP
+.B line
+If a purely numeric argument is provided, it is interpreted as the line number to start editing at (e.g., \fBslit 10 file\fR).
+.TP
+.BR \-h ", " \-\-help
+Display help message and exit.
+.TP
+.BR \-v ", " \-\-version
+Display version information and exit.
+
+.SH KEY BINDINGS
+.B slit
+supports standard arrow keys and Readline-style bindings:
+.TP
+.B Arrow Keys
+Move cursor (Left/Right) or traverse lines (Up/Down).
+.TP
+.B Ctrl+A
+Move cursor to the beginning of the line.
+.TP
+.B Ctrl+E
+Move cursor to the end of the line.
+.TP
+.B Ctrl+U
+Delete from cursor to the beginning of the line.
+.TP
+.B Ctrl+K
+Delete from cursor to the end of the line.
+.TP
+.B Ctrl+W
+Delete the word before the cursor.
+.TP
+.B ESC
+Save changes and exit.
+
+.SH EXAMPLES
+.TP
+.B Edit a file starting at line 10
+.B slit 10 config.json
+.TP
+.B Edit inside a pipeline
+.B ls -l | slit | grep "rw"
+.TP
+.B Quick memo
+.B echo "TODO:" | slit >> todo.txt
+
+.SH AUTHOR
+Shinya Koyano
+.SH COPYRIGHT
+Copyright (c) 2026 Shinya Koyano. MIT License.
