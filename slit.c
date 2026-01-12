@@ -253,10 +253,8 @@ void editorDeleteWord() {
         while (pos > 0 && is_utf8_continuation(row->chars[pos])) pos--;
     }
 
-    int len = E.cx - pos;
-    for (int i = 0; i < len; i++) {
-        // editorBackspaceを呼ぶとカーソル移動も処理してくれるが、効率が悪いので直接消す
-        // ただ、UTF-8対応のeditorBackspaceを使うのが一番安全
+    // posまで削除
+    while (E.cx > pos) {
         editorBackspace();
     }
 }
