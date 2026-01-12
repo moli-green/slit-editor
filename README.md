@@ -42,8 +42,9 @@ slit config.json
 Start editing from a specific line (e.g., line 15):
 
 ```bash
-slit +15 config.json
+slit 15 config.json
 ```
+(You can also use `slit +15 config.json`)
 
 ### The Interactive Pipe (Killer Feature)
 
@@ -76,6 +77,9 @@ echo "TODO:" | slit >> todo.txt
 
 * **Arrow Up / Down**: Traverse through the file (peep through the slit).
 * **Arrow Left / Right**: Move cursor.
+* **Ctrl+A / Ctrl+E**: Go to start/end of line.
+* **Ctrl+U / Ctrl+K**: Delete to start/end of line.
+* **Ctrl+W**: Delete previous word.
 * **Type**: Insert text.
 * **Enter**: Insert new line (split line).
 * **Backspace**: Delete character (join lines if at start of line).
@@ -83,8 +87,19 @@ echo "TODO:" | slit >> todo.txt
 
 ## Safety & Limitations
 
-* **UTF-8 Support**: `slit` supports UTF-8 characters (e.g., Japanese), protecting multi-byte characters from corruption during cursor movement.
+* **UTF-8 Support**: `slit` fully supports UTF-8 characters (e.g., Japanese). It correctly calculates visual character width so the cursor never gets misaligned.
+* **Binary Protection**: It refuses to open binary files to prevent terminal corruption.
 * **Line-based**: It is designed for tweaking configuration files or scripts. For writing a novel or refactoring a whole project, use `vim` or `emacs`.
+
+## Development
+
+### Updating the Demo
+
+The `demo.gif` is generated using [vhs](https://github.com/charmbracelet/vhs).
+
+To regenerate the demo:
+1. Install `vhs`.
+2. Run `vhs demo.tape`.
 
 ## License
 
@@ -92,4 +107,3 @@ MIT License
 
 ---
 Copyright (c) 2026 Shinya Koyano.
-
