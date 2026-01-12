@@ -1,45 +1,33 @@
 # Makefile for slit
 
-# --- 1. 変数定義 (カスタマイズ可能) ---
-# CC: コンパイラ (gcc, clang など)
-CC = gcc
+# --- Variables ---
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -pedantic -std=c99 -O2
 
-# CFLAGS: コンパイルオプション
-# -Wall: 警告を全部出す (推奨)
-# -O2: 最適化レベル2 (配布用)
-CFLAGS = -Wall -O2
-
-# TARGET: 出力する実行ファイル名
 TARGET = slit
 
-# PREFIX: インストール先 (標準は /usr/local)
-PREFIX = /usr/local
+PREFIX ?= /usr/local
+BINDIR = $(PREFIX)/bin
+MANDIR = $(PREFIX)/share/man/man1
 
-# --- 2. ビルドターゲット ---
+# --- Targets ---
 
-# 'make' とだけ打った時に実行されるターゲット
 all: $(TARGET)
 
-# コンパイル手順
 $(TARGET): slit.c
 	$(CC) $(CFLAGS) -o $(TARGET) slit.c
 
-# 'make clean' で生成物を削除
 clean:
 	rm -f $(TARGET)
 
-# 'make install' でシステムにインストール
 install: $(TARGET)
-	@echo "Installing $(TARGET) to $(PREFIX)/bin..."
-	mkdir -p $(PREFIX)/bin
-	cp $(TARGET) $(PREFIX)/bin/
-	chmod 755 $(PREFIX)/bin/$(TARGET)
-	@echo "Done."
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)
+	install -d $(DESTDIR)$(MANDIR)
+	install -m 644 slit.1 $(DESTDIR)$(MANDIR)
 
-# 'make uninstall' で削除
 uninstall:
-	rm -f $(PREFIX)/bin/$(TARGET)
+	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
+	rm -f $(DESTDIR)$(MANDIR)/slit.1
 
-# PHONY: 実在するファイル名とターゲット名が被った時の誤動作防止
 .PHONY: all clean install uninstall
-
