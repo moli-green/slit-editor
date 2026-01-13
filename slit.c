@@ -15,8 +15,9 @@
 #include <getopt.h>
 #include <wchar.h>
 #include <locale.h>
+#include <stdarg.h>
 
-#define SLIT_VERSION "0.6.0"
+#define SLIT_VERSION "0.7.0"
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -51,6 +52,27 @@ struct editorConfig {
 struct editorConfig E;
 
 void disableRawMode();
+char *editorPrompt(char *prompt);
+
+// --- Append Buffer (for flicker-free rendering) ---
+struct abuf {
+    char *b;
+    int len;
+};
+
+#define ABUF_INIT {NULL, 0}
+
+void abAppend(struct abuf *ab, const char *s, int len) {
+    char *new = realloc(ab->b, ab->len + len);
+    if (new == NULL) return;
+    memcpy(&new[ab->len], s, len);
+    ab->b = new;
+    ab->len += len;
+}
+
+void abFree(struct abuf *ab) {
+    free(ab->b);
+}
 
 // --- 画面出力用ラッパー ---
 // 画面制御コードは必ず /dev/tty に送る
@@ -275,6 +297,18 @@ void editorDeleteToEnd() {
     }
 }
 
+void editorGoToLine() {
+    char *input = editorPrompt("Go to line: %s");
+    if (input) {
+        int linenum = atoi(input);
+        free(input);
+        if (linenum > 0 && linenum <= E.numrows) {
+            E.cy = linenum - 1;
+            E.cx = 0;
+        }
+    }
+}
+
 // --- 入出力 (Pipe対応) ---
 
 // --- 修正版 editorOpen (v0.6) ---
@@ -425,10 +459,58 @@ int editorReadKey() {
     return c;
 }
 
+// プロンプトを表示して入力を受け取る汎用関数
+// prompt: "Go to line: %s" のようなフォーマット文字列
+// callback: 入力変更時に呼ばれる関数（今回はNULLでOK）
+char *editorPrompt(char *prompt) {
+    size_t bufsize = 128;
+    char *buf = malloc(bufsize);
+    size_t buflen = 0;
+    buf[0] = '\0';
+
+    while (1) {
+        // ステータスライン（プロンプト）を描画
+        // slitは1行エディタなので、現在の行を一時的にプロンプトで上書きする形になる
+        // 本来のエディタ内容は見えなくなるが、キャンセルすれば戻る
+        struct abuf ab = ABUF_INIT;
+        abAppend(&ab, "\r\x1b[K", 5); // 行消去
+
+        char msg[128];
+        snprintf(msg, sizeof(msg), prompt, buf);
+        abAppend(&ab, msg, strlen(msg));
+
+        tty_write(ab.b, ab.len);
+        abFree(&ab);
+
+        int c = editorReadKey();
+        if (c == 127 || c == CTRL_KEY('h') || c == '\b') {
+            if (buflen != 0) buf[--buflen] = '\0';
+        } else if (c == '\x1b') {
+            free(buf);
+            return NULL;
+        } else if (c == 13) {
+            if (buflen != 0) return buf;
+            free(buf);
+            return NULL;
+        } else if (!iscntrl(c) && c < 128) {
+            if (buflen == bufsize - 1) {
+                bufsize *= 2;
+                buf = realloc(buf, bufsize);
+            }
+            buf[buflen++] = c;
+            buf[buflen] = '\0';
+        }
+    }
+}
+
 void editorRefreshLine() {
+    struct abuf ab = ABUF_INIT;
+
     if (E.cy >= E.numrows) {
-         tty_write("\r\x1b[K[EOF]", 8);
-         tty_write("\r", 1);
+         abAppend(&ab, "\r\x1b[K[EOF]", 8);
+         abAppend(&ab, "\r", 1);
+         tty_write(ab.b, ab.len);
+         abFree(&ab);
          return;
     }
 
@@ -437,23 +519,27 @@ void editorRefreshLine() {
     snprintf(status, sizeof(status), "[%d/%d] ", E.cy + 1, E.numrows);
     int status_len = strlen(status);
 
-    char *buf = malloc(status_len + row->len + 32);
-    // ★画面制御コード
-    sprintf(buf, "\r\x1b[?25l\x1b[K%s%s", status, row->chars);
-    tty_write(buf, strlen(buf));
-    free(buf);
+    abAppend(&ab, "\r\x1b[?25l", 8); // カーソル隠す
+    abAppend(&ab, "\x1b[K", 3);      // 行消去
+    abAppend(&ab, status, status_len);
+    abAppend(&ab, row->chars, row->len);
 
     // カーソルのレンダリング位置を計算
     E.rx = editorRowCxToRx(row, E.cx);
 
+    // カーソル移動 (\rで先頭に戻っているので、status_len + rx 分だけ右へ)
     if (status_len + E.rx > 0) {
         char move_cursor[32];
         snprintf(move_cursor, sizeof(move_cursor), "\r\x1b[%dC", status_len + E.rx);
-        tty_write(move_cursor, strlen(move_cursor));
+        abAppend(&ab, move_cursor, strlen(move_cursor));
     } else {
-        tty_write("\r", 1);
+        abAppend(&ab, "\r", 1);
     }
-    tty_write("\x1b[?25h", 6);
+
+    abAppend(&ab, "\x1b[?25h", 6); // カーソル表示
+
+    tty_write(ab.b, ab.len);
+    abFree(&ab);
 }
 
 void editorProcessKeypress() {
@@ -487,6 +573,9 @@ void editorProcessKeypress() {
         case CTRL_KEY('w'):
             editorDeleteWord();
             break;
+        case CTRL_KEY('g'):
+            editorGoToLine();
+            break;
         case ARROW_UP:
         case ARROW_DOWN:
         case ARROW_LEFT:
@@ -516,6 +605,14 @@ void print_help() {
     printf("  <line>          Start editing at specific line number (if argument is purely numeric)\n");
     printf("  -h, --help      Show this help message\n");
     printf("  -v, --version   Show version information\n");
+    printf("\n");
+    printf("Key Bindings:\n");
+    printf("  Arrow Keys: Move cursor / Traverse lines\n");
+    printf("  Ctrl+A / Ctrl+E: Go to start/end of line\n");
+    printf("  Ctrl+U / Ctrl+K: Delete to start/end of line\n");
+    printf("  Ctrl+W: Delete previous word\n");
+    printf("  Ctrl+G: Go to line number\n");
+    printf("  ESC: Save and Quit\n");
     printf("\n");
     printf("Examples:\n");
     printf("  slit config.json       Edit file\n");
